@@ -21,10 +21,10 @@ SYSTEM_PROMPT = """你是一位股票技术面分析师。
 def _build_llm() -> ChatOpenAI:
     """初始化大模型并绑定工具。"""
     llm = ChatOpenAI(
-        model="qwen-plus",
+        model=os.getenv("MODEL_NAME"),
         api_key=os.getenv("DATA_API_KEY"),
         base_url=os.getenv("DATA_BASE_URL"),
-        temperature=0.7,
+        temperature=float(os.getenv("MODEL_TEMPERATURE", "0.7")),
     )
     return llm.bind_tools(tools)
 

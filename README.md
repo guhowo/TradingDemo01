@@ -37,6 +37,8 @@ pip install -r requirements.txt    # 安装依赖
 ```dotenv
 DATA_API_KEY=你的_API_Key
 DATA_BASE_URL=https://dashscope.aliyuncs.com/compatible-mode/v1
+MODEL_NAME=qwen-plus
+MODEL_TEMPERATURE=0.7
 ```
 
 ## 启动命令
