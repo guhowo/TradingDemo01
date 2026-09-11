@@ -1,0 +1,17 @@
+# 环境变量与密钥
+.env
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+
+# LangGraph 持久化文件
+checkpoints.db
+*.sqlite3
+
+# IDE
+.idea/
+.vscode/
