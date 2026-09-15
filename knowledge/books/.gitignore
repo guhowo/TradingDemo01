@@ -1,0 +1,5 @@
+# 忽略本目录下所有文件（书籍电子版受版权保护，不入库）
+*
+# 但保留 README 与 .gitignore 本身
+!.gitignore
+!README.md

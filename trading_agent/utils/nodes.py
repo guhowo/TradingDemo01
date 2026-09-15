@@ -1,19 +1,25 @@
 """图的节点函数：定义状态如何流转。
 
-本 Agent 的核心是「K 线截图 + 经典技术分析著作」的多模态解读，
-不再绑定外部工具，模型直接根据图片与提示词输出分析结果。
+流程：`retrieve` 节点从向量库检索经典著作片段 → `call_model` 节点把
+System Prompt + 参考资料 + 历史消息（含图片）交给多模态大模型 → 输出分析。
 """
 
+from __future__ import annotations
+
+import logging
 import os
 
 from dotenv import load_dotenv
-from langchain_core.messages import SystemMessage
+from langchain_core.messages import BaseMessage, HumanMessage, SystemMessage
 from langchain_openai import ChatOpenAI
 
+from trading_agent.utils.knowledge import retrieve_context
 from trading_agent.utils.state import State
 
 # 加载 .env 中的敏感配置（API Key、Base URL、模型名等）
 load_dotenv()
+
+logger = logging.getLogger(__name__)
 
 SYSTEM_PROMPT = """你是一位资深的股票技术面分析师，
 以以下五部经典技术分析著作为分析框架，对用户提供的 K 线截图进行系统解读：
@@ -86,6 +92,8 @@ SYSTEM_PROMPT = """你是一位资深的股票技术面分析师，
 
 - **只基于图像可见信息进行判断**，不臆测标的名称、行业、宏观背景。
 - **每个结论标注依据来自哪一本著作或哪一套理论**，例如「据 Edwards & Magee 的头肩顶形态定义……」。
+- 若 System Prompt 末尾附有「参考资料」段落，优先引用其中的原文观点并注明出处；
+  参考资料与图像冲突时以图像为准，与本次问题无关时可忽略。
 - 涉及点位时给出估算价格；涉及指标读数时给出估算数值。
 - 使用专业术语，关键概念后附简短解释。
 - **承认技术分析的概率属性**，禁止「一定」「必然」「保证」等绝对化用语。
@@ -96,6 +104,12 @@ SYSTEM_PROMPT = """你是一位资深的股票技术面分析师，
 使用 Markdown，五个 Step 对应五个二级标题（##），
 末尾附「## 一句话结论」小节。
 """
+
+# 用户仅传图未附文本时的兜底检索查询，覆盖主要分析维度
+_FALLBACK_QUERY = (
+    "K线技术分析 趋势判定 反转形态 持续形态 支撑压力 "
+    "MACD RSI 成交量 均线 波浪理论 123法则 2B法则"
+)
 
 
 def _build_llm() -> ChatOpenAI:
@@ -115,8 +129,58 @@ def _build_llm() -> ChatOpenAI:
 llm = _build_llm()
 
 
+def _extract_text(message: BaseMessage) -> str:
+    """从一条消息里抽取纯文本内容，兼容多模态 content 列表。"""
+    content = message.content
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts: list[str] = []
+        for item in content:
+            if isinstance(item, dict) and item.get("type") == "text":
+                text = item.get("text") or ""
+                if isinstance(text, str):
+                    parts.append(text)
+            elif isinstance(item, str):
+                parts.append(item)
+        return "\n".join(parts)
+    return ""
+
+
+def _latest_user_query(messages: list[BaseMessage]) -> str:
+    """取最近一条 HumanMessage 的文本部分，作为向量检索的 query。"""
+    for msg in reversed(messages):
+        if isinstance(msg, HumanMessage):
+            text = _extract_text(msg).strip()
+            if text:
+                return text
+    return _FALLBACK_QUERY
+
+
+def retrieve(state: State) -> dict:
+    """retrieve 节点：根据最新用户问题从向量库检索经典著作片段。
+
+    - 向量库不存在或检索为空时，返回空 context，Agent 会自动降级到 Prompt-only 模式。
+    - 用户仅上传图片未附文本时，使用覆盖主要分析维度的兜底 query。
+    """
+    query = _latest_user_query(state.get("messages", []))
+    top_k_raw = os.getenv("RETRIEVAL_TOP_K")
+    top_k = int(top_k_raw) if top_k_raw else None
+    try:
+        context = retrieve_context(query, top_k=top_k)
+    except Exception as exc:  # pragma: no cover — 检索失败必须优雅降级
+        logger.error("retrieve 节点异常，降级为空 context: %s", exc)
+        context = ""
+    logger.info("retrieve 命中片段字符数=%d，query=%.60s", len(context), query)
+    return {"context": context}
+
+
 def call_model(state: State) -> dict:
-    """agent 节点：把系统提示词与历史消息（含图片）交给模型，返回模型回复。"""
-    messages = [SystemMessage(content=SYSTEM_PROMPT), *state["messages"]]
+    """agent 节点：System Prompt + 参考资料 + 历史消息（含图片）→ 多模态模型。"""
+    system_content = SYSTEM_PROMPT
+    context = (state.get("context") or "").strip()
+    if context:
+        system_content = f"{SYSTEM_PROMPT}\n\n---\n\n{context}"
+    messages = [SystemMessage(content=system_content), *state["messages"]]
     response = llm.invoke(messages)
     return {"messages": [response]}

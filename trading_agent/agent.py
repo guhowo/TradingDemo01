@@ -1,7 +1,8 @@
 """构建并编译 LangGraph 图的入口文件，导出最终的 `graph`。
 
-由于本 Agent 的核心能力是「看 K 线截图 → 输出技术面分析」，
-模型自身即可完成，无需外部工具，因此图结构简化为单节点。
+图结构：`START → retrieve → agent → END`
+- retrieve: 从向量库检索经典著作片段，注入 State.context
+- agent:    拼接 System Prompt + 参考资料 + 多模态消息，调用 VL 大模型
 """
 
 import sqlite3
@@ -9,7 +10,7 @@ import sqlite3
 from langgraph.checkpoint.sqlite import SqliteSaver
 from langgraph.graph import END, START, StateGraph
 
-from trading_agent.utils.nodes import call_model
+from trading_agent.utils.nodes import call_model, retrieve
 from trading_agent.utils.state import State
 
 # checkpointer：使用 SQLite 持久化对话状态。
@@ -20,11 +21,13 @@ checkpointer = SqliteSaver(conn)
 # 构建状态图
 workflow = StateGraph(State)
 
-# 注册节点：仅一个 agent 节点，直接调用多模态模型
+# 注册节点
+workflow.add_node("retrieve", retrieve)
 workflow.add_node("agent", call_model)
 
-# 设置边的流向：START -> agent -> END
-workflow.add_edge(START, "agent")
+# 设置边的流向：START -> retrieve -> agent -> END
+workflow.add_edge(START, "retrieve")
+workflow.add_edge("retrieve", "agent")
 workflow.add_edge("agent", END)
 
 # 编译图

@@ -10,7 +10,15 @@ venv/
 
 # LangGraph 持久化文件
 checkpoints.db
+checkpoints.db-shm
+checkpoints.db-wal
 *.sqlite3
+
+# 知识库（书籍原文与向量索引不入库）
+knowledge/books/*
+!knowledge/books/README.md
+!knowledge/books/.gitignore
+knowledge/chroma/
 
 # IDE
 .idea/
