@@ -36,7 +36,8 @@ TradingDemo01/
 │   │   └── README.md         # 书目与版权说明
 │   └── chroma/               # 向量库持久化目录（已 .gitignore）
 ├── scripts/
-│   └── build_index.py        # 入库 CLI：扫描 books/ → 切分 → embedding → Chroma
+│   ├── build_index.py        # 入库 CLI：扫描 books/ → 切分 → embedding → Chroma
+│   └── ask.py                # 一键分析 CLI：截图 + 问题 → 服务 → 打印分析
 ├── trading_agent/
 │   ├── utils/
 │   │   ├── knowledge.py      # Chroma 封装（get_embeddings / get_vectorstore / retrieve_context）
@@ -67,12 +68,12 @@ pip install -r requirements.txt    # 安装依赖
 # —— 主模型（多模态，必需）——
 DATA_API_KEY=你的_API_Key
 DATA_BASE_URL=https://dashscope.aliyuncs.com/compatible-mode/v1
-MODEL_NAME=qwen3.7-plus          # ⚠️ 必须支持图像输入（capabilities 含 VU）
+MODEL_NAME=qwen3.8-max           # ⚠️ 必须支持图像输入（capabilities 含 VU）
 MODEL_TEMPERATURE=0.7
 
 # —— Embedding 模型（仅开启 RAG 时必需）——
 # 默认复用 DATA_API_KEY / DATA_BASE_URL，不需要时可不写
-EMBEDDING_MODEL=text-embedding-v3
+EMBEDDING_MODEL=qwen3.7-text-embedding
 # EMBEDDING_API_KEY=              # 可选，不写则回退到 DATA_API_KEY
 # EMBEDDING_BASE_URL=             # 可选，不写则回退到 DATA_BASE_URL
 # EMBEDDING_DIMENSIONS=1024       # 可选，默认使用模型原生维度
@@ -88,8 +89,8 @@ EMBEDDING_MODEL=text-embedding-v3
 > - ✅ 支持图片：`qwen3.8-max`、`qwen3.7-plus`、`qwen3.7-flash`、`qwen3.6-plus`、`qwen3.5-plus`、`qwen3-vl-plus`、`qwen3-vl-flash`、`qwen-vl-max`、`qwen-vl-plus`、`qwen-omni-turbo`
 > - ❌ 不支持图片：`qwen-max`、`qwen-plus`、`qwen3-max`、`qwen3.7-max`（仅文本/推理）
 >
-> 本项目默认使用 `qwen3.7-plus`（VU + Reasoning + TG，1M 上下文，QPM 宽松），
-> 若追求最强推理可换 `qwen3.8-max`（贵约 8 倍），若成本敏感可换 `qwen-vl-max`（便宜但仅 VU、131K ctx）。
+> 本项目默认使用 `qwen3.8-max`（Reasoning + VU + TG，1M 上下文，约 ¥0.2/次分析），
+> 成本敏感可换 `qwen3.7-plus`（便宜约 8 倍）或 `qwen-vl-max`（仅 VU、131K ctx）。
 > 完整模型列表查百炼模型广场或 `bailian-docs-llm-wiki` skill。
 
 ## 知识库入库（RAG）
@@ -124,6 +125,76 @@ EMBEDDING_MODEL=text-embedding-v3
 > 若使用 `KNOWLEDGE_BOOKS_DIR` 指向项目外的目录（如 Desktop），天然不会进入仓库，更安全。
 
 未入库时 Agent 仍可正常使用，仅回答不会引用具体书籍段落。
+
+## 快速上手：服务拉起 + 发起图片请求
+
+### 第 1 步：拉起服务（终端 1，常驻不关）
+
+```bash
+cd /Users/guhao/PycharmProjects/TradingDemo01
+.venv/bin/uvicorn trading_agent.server:app --reload
+```
+
+看到 `Uvicorn running on http://127.0.0.1:8000` 即启动成功。在终端 2 验证：
+
+```bash
+curl -s http://127.0.0.1:8000/health    # 期望输出 {"status":"ok"}
+```
+
+> ⚠️ `.env` 在服务启动时加载一次，`--reload` 只监听 `.py` 文件；
+> **改完 `.env`（如换模型）必须 Ctrl+C 重启服务才生效**。
+
+### 第 2 步：发起图片请求（终端 2）
+
+**方式 A（推荐）：`scripts/ask.py` 一条命令**
+
+```bash
+# 默认问题（完整技术面分析），同步返回全文
+.venv/bin/python scripts/ask.py /path/to/K线截图.png
+
+# 自定义问题
+.venv/bin/python scripts/ask.py /path/to/K线截图.png "请分析趋势阶段、形态和买卖点"
+
+# 流式逐字输出（不用干等 30~60 秒）
+.venv/bin/python scripts/ask.py /path/to/K线截图.png --stream
+
+# 同会话多轮追问（同 thread-id 保留上下文，含之前的图片）
+.venv/bin/python scripts/ask.py /path/to/K线截图.png "RSI 有没有背离？" --thread-id session-1
+```
+
+**方式 B：手动 curl（两步）**
+
+截图 base64 后通常有几十万个字符，命令行放不下，必须先生成请求体文件：
+
+```bash
+# 1) 图片转 base64 写入 /tmp/req.json
+.venv/bin/python -c "
+import base64, json, sys
+b64 = base64.b64encode(open(sys.argv[1], 'rb').read()).decode()
+json.dump({'message': sys.argv[2], 'image_base64': b64, 'thread_id': 'session-1'},
+          open('/tmp/req.json', 'w'), ensure_ascii=False)
+" /path/to/K线截图.png "请分析趋势阶段、形态和买卖点"
+
+# 2) 发送并提取分析正文（同步接口，等 30~60 秒）
+curl -s http://127.0.0.1:8000/chat \
+  -H "Content-Type: application/json" -d @/tmp/req.json | jq -r .reply
+
+# 流式变体（SSE 逐字打印）
+curl -N -s http://127.0.0.1:8000/chat/stream \
+  -H "Content-Type: application/json" -d @/tmp/req.json
+```
+
+**纯文本追问**（图已在会话历史里，不用重发）：
+
+```bash
+curl -s http://127.0.0.1:8000/chat -H "Content-Type: application/json" \
+  -d '{"message": "那现在能买吗？", "thread_id": "session-1"}' | jq -r .reply
+```
+
+说明：
+- 图片支持 png/jpeg/gif/webp，**扩展名不重要**（服务端按文件头 magic bytes 嗅探，.png 扩展名的 JPEG 也能正确处理）。
+- 同步分析耗时 30~60 秒属正常（模型带推理链）；超时上限 10 分钟。
+- 更多接口细节（请求体字段、data URI/URL 传图、返回格式）见下文「API 接口」。
 
 ## 启动命令
 
@@ -198,6 +269,23 @@ curl -X POST http://127.0.0.1:8000/chat \
     "thread_id": "t1"
   }'
 ```
+
+### 一键分析脚本（推荐）
+
+上面手动转 base64 + 组装 curl 的流程，可以用 `scripts/ask.py` 一条命令代替：
+
+```bash
+# 同步分析（一次性返回完整正文）
+.venv/bin/python scripts/ask.py ~/Desktop/kline.png
+
+# 自定义问题 + 多轮追问（同 thread-id 保留上下文）
+.venv/bin/python scripts/ask.py ~/Desktop/kline.png "RSI 有没有背离？" --thread-id session-1
+
+# 流式逐字输出
+.venv/bin/python scripts/ask.py ~/Desktop/kline.png --stream
+```
+
+脚本自动完成图片 base64 编码、magic bytes 嗅探；服务未启动时会给出启动命令提示。
 
 ### 返回格式
 
