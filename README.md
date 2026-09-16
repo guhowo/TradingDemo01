@@ -3,7 +3,7 @@
 基于 **LangGraph + 多模态大模型 + RAG 知识库** 构建的 K 线截图技术面分析 Agent，
 通过 **FastAPI** 对外提供 HTTP 服务。
 
-分析框架综合了以下五部经典技术分析著作（已内置到 SYSTEM_PROMPT），
+分析框架综合了以下六部经典技术分析/投资著作（已内置到 SYSTEM_PROMPT），
 并支持将原文入库后通过向量检索引用具体段落：
 
 1. **道氏理论（Charles Dow）** — 趋势方向与阶段
@@ -11,6 +11,7 @@
 3. **《股市趋势技术分析》Edwards & Magee** — 反转/持续形态、支撑压力、缺口、趋势线
 4. **《期货市场技术分析》John Murphy** — 均线、MACD、RSI、成交量等指标体系
 5. **《艾略特波浪理论》+《专业投机原理》Victor Sperandeo** — 波浪结构、123 法则、2B 法则
+6. **《笑傲股市》William O'Neil（CAN SLIM）** — 杯柄形态、Pivot Point、8% 硬止损、20~25% 止盈、20 周均线、领导股 RS
 
 SQLite checkpointer 提供多轮对话记忆；Chroma 向量库提供书籍知识检索。
 
@@ -66,7 +67,7 @@ pip install -r requirements.txt    # 安装依赖
 # —— 主模型（多模态，必需）——
 DATA_API_KEY=你的_API_Key
 DATA_BASE_URL=https://dashscope.aliyuncs.com/compatible-mode/v1
-MODEL_NAME=qwen-vl-max            # ⚠️ 必须支持图像输入
+MODEL_NAME=qwen3.7-plus          # ⚠️ 必须支持图像输入（capabilities 含 VU）
 MODEL_TEMPERATURE=0.7
 
 # —— Embedding 模型（仅开启 RAG 时必需）——
@@ -78,34 +79,49 @@ EMBEDDING_MODEL=text-embedding-v3
 
 # —— 检索与知识库（可选，都有默认值）——
 # RETRIEVAL_TOP_K=6
-# KNOWLEDGE_BOOKS_DIR=./knowledge/books
+# KNOWLEDGE_BOOKS_DIR=./knowledge/books   # 可指向任意绝对路径，如 /Users/xxx/Desktop/stockbooks
 # CHROMA_PERSIST_DIR=./knowledge/chroma
 # CHROMA_COLLECTION=trading_books
 ```
 
-> 常见可选多模态模型：`qwen-vl-max`、`qwen-vl-plus`、`qwen3-vl-plus`。
-> 若 MODEL_NAME 是纯文本模型（如 `qwen-plus`），传入图片时接口会报错。
+> **重要**：Qwen 命名后缀（-max/-plus/-turbo）**不能**用来判断是否支持图片，必须看具体模型的 capabilities：
+> - ✅ 支持图片：`qwen3.8-max`、`qwen3.7-plus`、`qwen3.7-flash`、`qwen3.6-plus`、`qwen3.5-plus`、`qwen3-vl-plus`、`qwen3-vl-flash`、`qwen-vl-max`、`qwen-vl-plus`、`qwen-omni-turbo`
+> - ❌ 不支持图片：`qwen-max`、`qwen-plus`、`qwen3-max`、`qwen3.7-max`（仅文本/推理）
+>
+> 本项目默认使用 `qwen3.7-plus`（VU + Reasoning + TG，1M 上下文，QPM 宽松），
+> 若追求最强推理可换 `qwen3.8-max`（贵约 8 倍），若成本敏感可换 `qwen-vl-max`（便宜但仅 VU、131K ctx）。
+> 完整模型列表查百炼模型广场或 `bailian-docs-llm-wiki` skill。
 
 ## 知识库入库（RAG）
 
-1. 把书籍电子版（`.pdf` / `.md` / `.txt`）放进 [knowledge/books/](knowledge/books/README.md)。
-2. 运行入库脚本：
+1. **选定书籍目录**。两种方式任选其一：
+
+   - **默认**：把书放进项目内的 [knowledge/books/](knowledge/books/README.md)。
+   - **自定义（推荐）**：在 `.env` 里配置 `KNOWLEDGE_BOOKS_DIR=/你的/书籍/绝对路径`，
+     指向项目外的任意目录（如 `/Users/guhao/Desktop/stockbooks`）。代码无需改动。
+
+2. **支持的格式**：`.pdf` / `.epub` / `.md` / `.txt`（EPUB 依赖 `ebooklib` + `beautifulsoup4` + `lxml`，已在 requirements.txt 中）。
+
+3. **运行入库脚本**：
 
    ```bash
-   # 首次或全量重建
+   # 首次或全量重建（会删旧 knowledge/chroma/）
    .venv/bin/python scripts/build_index.py
 
    # 只追加新书，不删旧数据
    .venv/bin/python scripts/build_index.py --incremental
 
+   # 临时指向其他目录（覆盖 .env 里的 KNOWLEDGE_BOOKS_DIR）
+   .venv/bin/python scripts/build_index.py --books-dir /path/to/books
+
    # 自定义切分参数
    .venv/bin/python scripts/build_index.py --chunk-size 800 --chunk-overlap 120
    ```
 
-3. 脚本会在 `knowledge/chroma/` 下生成向量库，重启服务后自动生效。
+4. 脚本会在 `knowledge/chroma/` 下生成向量库，重启服务后自动生效。
 
-> ⚠️ **版权提醒**：这些书大部分仍在版权保护期，`knowledge/books/` 已写入 `.gitignore`，
-> **不要提交到公开仓库、不要分发**。
+> ⚠️ **版权提醒**：这些书大部分仍在版权保护期。默认的 `knowledge/books/` 已写入 `.gitignore`；
+> 若使用 `KNOWLEDGE_BOOKS_DIR` 指向项目外的目录（如 Desktop），天然不会进入仓库，更安全。
 
 未入库时 Agent 仍可正常使用，仅回答不会引用具体书籍段落。
 

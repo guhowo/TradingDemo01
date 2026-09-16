@@ -1,17 +1,18 @@
 # knowledge/books/
 
-在这里放你手上的**经典技术分析书籍电子版**，运行 `scripts/build_index.py` 会把它们
-向量化写入 `knowledge/chroma/`，Agent 在分析 K 线截图时会自动检索相关段落作为参考。
+**默认**的书籍原文目录。若在 `.env` 里配置了 `KNOWLEDGE_BOOKS_DIR=/path/to/your/books`，
+本目录会被**忽略**，Agent 从你指定的路径读取书籍。
 
 ## 支持格式
 
 | 扩展名 | 说明 |
 |--------|------|
 | `.pdf` | 推荐，能保留页码元数据（引用时会带 p.xx） |
+| `.epub` | 按章节切分，元数据带 `book_title`（EPUB 内嵌书名）+ `chapter` + `chapter_title` |
 | `.md`  | Markdown 文本 |
 | `.txt` | 纯文本 |
 
-其他格式（`.epub` / `.mobi` / `.docx`）请先转成上述之一。
+其他格式（`.mobi` / `.docx` / `.azw3`）请先转成上述之一（推荐 Calibre 转换）。
 
 ## 推荐书目（与 SYSTEM_PROMPT 里的分析框架对应）
 
@@ -21,6 +22,7 @@
 4. **《期货市场技术分析》** — John J. Murphy
 5. **《艾略特波浪理论：市场行为的关键》** — Robert Prechter & A.J. Frost
 6. **《专业投机原理》** — Victor Sperandeo
+7. **《笑傲股市》** — William O'Neil（CAN SLIM 体系）
 
 ## ⚠️ 版权提醒
 
@@ -31,8 +33,15 @@
 
 ```bash
 cd /Users/guhao/PycharmProjects/TradingDemo01
-.venv/bin/python scripts/build_index.py                 # 首次或全量重建
-.venv/bin/python scripts/build_index.py --incremental   # 只追加新书
+
+# 默认重建 knowledge/chroma/
+.venv/bin/python scripts/build_index.py
+
+# 只追加新书，不删旧数据
+.venv/bin/python scripts/build_index.py --incremental
+
+# 显式指定其他目录（覆盖 .env 的 KNOWLEDGE_BOOKS_DIR）
+.venv/bin/python scripts/build_index.py --books-dir /path/to/books
 ```
 
 首次运行前确保 `.env` 中已配置 `DATA_API_KEY` / `DATA_BASE_URL` / `EMBEDDING_MODEL`。

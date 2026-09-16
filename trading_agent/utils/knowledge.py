@@ -3,7 +3,7 @@
 设计要点：
 1. **可配置**：Embedding 模型/API Key/Base URL 都从 .env 读取，默认复用
    `DATA_API_KEY` / `DATA_BASE_URL`（DashScope OpenAI 兼容模式支持
-   `text-embedding-v3` 等模型），想换本地开源模型改 EMBEDDING_* 变量即可。
+   `qwen3.7-text-embedding` 等模型），想换本地开源模型改 EMBEDDING_* 变量即可。
 2. **懒加载**：向量库不存在时不抛异常，返回空检索结果，让 Agent 平滑降级到
    "只靠 Prompt + 模型先验知识" 的模式。
 3. **单一入口**：`retrieve_context(query, top_k)` 返回可直接注入 Prompt 的
@@ -53,7 +53,7 @@ def get_embeddings() -> Embeddings:
     默认走 DashScope 兼容模式（OpenAIEmbeddings + 自定义 base_url），
     如需换成本地 sentence-transformers 等实现，替换此函数即可。
     """
-    model = os.getenv("EMBEDDING_MODEL", "text-embedding-v3")
+    model = os.getenv("EMBEDDING_MODEL", "qwen3.7-text-embedding")
     api_key = _env("EMBEDDING_API_KEY", "DATA_API_KEY")
     base_url = _env("EMBEDDING_BASE_URL", "DATA_BASE_URL")
     dimensions_raw = os.getenv("EMBEDDING_DIMENSIONS")
@@ -116,20 +116,37 @@ def search_documents(query: str, top_k: int | None = None) -> list[Document]:
 
 
 def format_context(docs: list[Document]) -> str:
-    """把检索到的 Document 列表渲染成可注入 System Prompt 的 Markdown。"""
+    """把检索到的 Document 列表渲染成可注入 System Prompt 的 Markdown。
+
+    兼容两种元数据形式：
+    - PDF：{source, page}           → 《文件名》 p.5
+    - EPUB：{source, book_title, chapter, chapter_title} → 《书名》 第3章「标题」
+    - TXT/MD：{source}              → 《文件名》
+    """
     if not docs:
         return ""
     lines: list[str] = ["## 参考资料（来自经典著作的检索片段）", ""]
     for i, doc in enumerate(docs, 1):
         meta = doc.metadata or {}
         source = meta.get("source") or "未知来源"
-        # 只显示文件名，去掉长路径
         source_name = Path(source).name if source else "未知来源"
-        page = meta.get("page")
-        locator = f" p.{page + 1}" if isinstance(page, int) else ""
-        chunk_idx = meta.get("chunk")
-        chunk_tag = f" #{chunk_idx}" if chunk_idx is not None else ""
-        lines.append(f"### 片段 {i} — 《{source_name}》{locator}{chunk_tag}")
+        # 优先用 EPUB 的 book_title（如「笑傲股市」），否则回退到文件名（去扩展名）
+        book_label = meta.get("book_title") or Path(source_name).stem
+
+        locator_parts: list[str] = []
+        if isinstance(meta.get("page"), int):
+            locator_parts.append(f"p.{meta['page'] + 1}")
+        if isinstance(meta.get("chapter"), int):
+            chapter_title = meta.get("chapter_title") or ""
+            chapter_str = f"第{meta['chapter'] + 1}章"
+            if chapter_title:
+                chapter_str += f"「{chapter_title}」"
+            locator_parts.append(chapter_str)
+        if meta.get("chunk") is not None:
+            locator_parts.append(f"#chunk{meta['chunk']}")
+        locator = (" " + " · ".join(locator_parts)) if locator_parts else ""
+
+        lines.append(f"### 片段 {i} — 《{book_label}》{locator}")
         lines.append(doc.page_content.strip())
         lines.append("")
     lines.append(

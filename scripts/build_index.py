@@ -11,7 +11,7 @@
 
 首次运行前请确保：
 1. `.env` 里已配置 DATA_API_KEY / DATA_BASE_URL（或 EMBEDDING_API_KEY / EMBEDDING_BASE_URL）
-2. `EMBEDDING_MODEL` 已设置（默认 text-embedding-v3，DashScope 兼容模式）
+2. `EMBEDDING_MODEL` 已设置（默认 qwen3.7-text-embedding，DashScope 兼容模式）
 3. 已把书籍电子版放入 knowledge/books/ 目录
 """
 
@@ -50,7 +50,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger("build_index")
 
-SUPPORTED_EXTS = {".pdf", ".txt", ".md"}
+SUPPORTED_EXTS = {".pdf", ".txt", ".md", ".epub"}
 # 需要跳过的文件名（占位/说明类文档，不应该当作书籍内容入库）
 SKIP_FILENAMES = {"readme.md", "readme.txt", ".gitignore"}
 
@@ -93,6 +93,81 @@ def _load_text(path: Path) -> list[Document]:
     return [Document(page_content=text, metadata={"source": str(path)})]
 
 
+def _load_epub(path: Path) -> list[Document]:
+    """按章节读取 EPUB，每个章节产出一个 Document。
+
+    EPUB 没有固定页码，元数据用 chapter/chapter_title 代替 page，
+    同时把书名（从 EPUB 元信息提取，如《笑傲股市》）写入 book_title，
+    便于在检索结果里引用。
+    """
+    try:
+        import ebooklib
+        from ebooklib import epub
+        from bs4 import BeautifulSoup, XMLParsedAsHTMLWarning
+        import warnings
+        warnings.filterwarnings("ignore", category=XMLParsedAsHTMLWarning)
+    except ImportError as exc:  # pragma: no cover
+        logger.error("缺少 epub 依赖（ebooklib/beautifulsoup4/lxml）：%s", exc)
+        return []
+
+    try:
+        book = epub.read_epub(str(path), options={"ignore_ncx": True})
+    except Exception as exc:
+        logger.error("EPUB 解析失败 %s: %s", path, exc)
+        return []
+
+    # 尝试从元信息提取书名，失败则回退到文件名
+    book_title = path.stem
+    try:
+        titles = book.get_metadata("DC", "title")
+        if titles and titles[0] and titles[0][0]:
+            book_title = str(titles[0][0]).strip() or path.stem
+    except Exception:
+        pass
+
+    docs: list[Document] = []
+    chapter_idx = 0
+    for item in book.get_items_of_type(ebooklib.ITEM_DOCUMENT):
+        try:
+            raw = item.get_content()
+        except Exception as exc:
+            logger.warning("EPUB 章节读取失败 %s#%d: %s", path.name, chapter_idx, exc)
+            chapter_idx += 1
+            continue
+        soup = BeautifulSoup(raw, "lxml")
+        # 去掉 script/style，避免目录/样式干扰
+        for tag in soup(["script", "style"]):
+            tag.decompose()
+        text = soup.get_text(separator="\n")
+        # 压缩多余空白行
+        lines = [ln.strip() for ln in text.splitlines()]
+        text = "\n".join(ln for ln in lines if ln).strip()
+        if not text:
+            chapter_idx += 1
+            continue
+        # 尝试提取章节标题（首个 h1~h3）
+        chapter_title = ""
+        for lvl in ("h1", "h2", "h3"):
+            heading = soup.find(lvl)
+            if heading and heading.get_text(strip=True):
+                chapter_title = heading.get_text(strip=True)
+                break
+        docs.append(
+            Document(
+                page_content=text,
+                metadata={
+                    "source": str(path),
+                    "book_title": book_title,
+                    "chapter": chapter_idx,
+                    "chapter_title": chapter_title,
+                },
+            )
+        )
+        chapter_idx += 1
+    logger.info("  → EPUB《%s》提取 %d 个章节", book_title, len(docs))
+    return docs
+
+
 def load_documents(books_dir: Path) -> list[Document]:
     """扫描目录下所有受支持的文件，返回按页/整文件粒度的 Document 列表。"""
     if not books_dir.exists():
@@ -105,9 +180,12 @@ def load_documents(books_dir: Path) -> list[Document]:
         if path.name.lower() in SKIP_FILENAMES:
             logger.debug("跳过说明文件：%s", path.name)
             continue
-        logger.info("加载 %s", path.relative_to(books_dir))
-        if path.suffix.lower() == ".pdf":
+        logger.info("加载 %s", path.relative_to(books_dir) if path.is_relative_to(books_dir) else path)
+        suffix = path.suffix.lower()
+        if suffix == ".pdf":
             docs.extend(_load_pdf(path))
+        elif suffix == ".epub":
+            docs.extend(_load_epub(path))
         else:
             docs.extend(_load_text(path))
     return docs
@@ -224,7 +302,7 @@ def main() -> None:
     )
     parser.add_argument("--chunk-size", type=int, default=1000, help="chunk 大小（字符数，默认 1000）")
     parser.add_argument("--chunk-overlap", type=int, default=150, help="chunk 重叠（默认 150）")
-    parser.add_argument("--batch-size", type=int, default=32, help="embedding 批次大小（默认 32）")
+    parser.add_argument("--batch-size", type=int, default=20, help="embedding 批次大小（默认 20，qwen3.7-text-embedding 上限为 20）")
     parser.add_argument(
         "--incremental",
         action="store_true",
